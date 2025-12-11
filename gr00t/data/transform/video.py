@@ -19,6 +19,7 @@ import albumentations as A
 import cv2
 import numpy as np
 import torch
+import torch.multiprocessing as mp
 import torchvision.transforms.v2 as T
 from einops import rearrange
 from pydantic import Field, PrivateAttr, field_validator
@@ -555,7 +556,12 @@ class VideoToTensor(VideoTransform):
         Returns:
             tensor of shape [T, C, H, W] in range [0, 1]
         """
-        frames_tensor = torch.from_numpy(frames).to(torch.float32).to(DEVICE) / 255.0
+        frames_tensor = torch.from_numpy(frames).to(torch.float32) / 255.0
+        worker_info = torch.utils.data.get_worker_info()
+        start_method = mp.get_start_method(allow_none=True)
+        if DEVICE == "cuda" and not (worker_info and start_method == "fork"):
+            # Avoid initializing CUDA in forked DataLoader workers; they must stay on CPU.
+            frames_tensor = frames_tensor.to(DEVICE)
         return frames_tensor.permute(0, 3, 1, 2)  # [T, C, H, W]
 
 

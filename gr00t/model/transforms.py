@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
+import torch.multiprocessing as mp
 import tree
 from einops import rearrange
 from PIL import Image
@@ -46,9 +47,21 @@ def formalize_language(language: str) -> str:
     return language
 
 
+def _resolve_eagle_device() -> str:
+    """Pick CPU in forked DataLoader workers to avoid CUDA re-init."""
+    if not torch.cuda.is_available():
+        return "cpu"
+    worker_info = torch.utils.data.get_worker_info()
+    start_method = mp.get_start_method(allow_none=True)
+    if worker_info and start_method == "fork":
+        return "cpu"
+    return "cuda"
+
+
 def build_eagle_processor(eagle_path: str) -> ProcessorMixin:
+    target_device = _resolve_eagle_device()
     eagle_processor = AutoProcessor.from_pretrained(
-        eagle_path, trust_remote_code=True, use_fast=True, device=DEVICE
+        eagle_path, trust_remote_code=True, use_fast=True, device=target_device
     )
     eagle_processor.tokenizer.padding_side = "left"
     return eagle_processor
@@ -88,10 +101,17 @@ def collate(features: List[dict], eagle_processor) -> dict:
 class DefaultDataCollator(DataCollatorMixin):
     def __init__(self, eagle_path: str = DEFAULT_EAGLE_PATH):
         super().__init__()
-        self.eagle_processor = build_eagle_processor(eagle_path)
+        self.eagle_path = eagle_path
+        self._eagle_processors: dict[str, ProcessorMixin] = {}
+
+    def get_eagle_processor(self) -> ProcessorMixin:
+        device = _resolve_eagle_device()
+        if device not in self._eagle_processors:
+            self._eagle_processors[device] = build_eagle_processor(self.eagle_path)
+        return self._eagle_processors[device]
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
-        return collate(features, self.eagle_processor)
+        return collate(features, self.get_eagle_processor())
 
 
 class GR00TTransform(InvertibleModalityTransform):
